@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r36.4.0-pth2.5-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
 FROM ${BASE_IMAGE}
 
 ENV PYTHONUNBUFFERED=1 \
@@ -23,3 +23,4 @@ RUN grep -v -E '^(torch|torchvision|pyrealsense2|ipython)' /tmp/requirements.txt
     && python3 -m pip install --no-cache-dir -r /tmp/requirements-jetson.txt
 
 CMD ["python3", "main.py", "--yolov7-dir", ".", "--weights", "models/weight/yolov7.pt", "--device", "0"]
+
