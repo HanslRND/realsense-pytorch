@@ -3,7 +3,6 @@ import time
 
 import cv2
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -51,6 +50,19 @@ def image_to_bgr(msg: Image) -> np.ndarray:
     return image
 
 
+def bgr_to_image(image: np.ndarray, source: Image) -> Image:
+    image = np.ascontiguousarray(image)
+    msg = Image()
+    msg.header = source.header
+    msg.height = image.shape[0]
+    msg.width = image.shape[1]
+    msg.encoding = "bgr8"
+    msg.is_bigendian = sys.byteorder == "big"
+    msg.step = image.shape[1] * image.shape[2]
+    msg.data = image.tobytes()
+    return msg
+
+
 class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
@@ -71,19 +83,20 @@ class ImageDetectionNode(Node):
         self.color_count = 0
         self.depth_count = 0
         self.processed_count = 0
-        self.window_created = False
         self.last_fps_time = time.perf_counter()
-        self.window = "RealSense YOLOv7"
 
+        self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
         self.create_subscription(Image, config.depth_topic, self._on_depth, qos_profile_sensor_data)
         self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data)
         self.create_timer(2.0, self._log_status)
-        self.get_logger().info(f"Subscribed color={config.color_topic} depth={config.depth_topic}")
+        self.get_logger().info(
+            f"Subscribed color={config.color_topic} depth={config.depth_topic}; publishing {config.processed_topic}"
+        )
 
     def _log_status(self) -> None:
         if self.processed_count:
             self.get_logger().info(
-                f"Processed={self.processed_count} color={self.color_count} depth={self.depth_count} fps={self.fps:.1f}"
+                f"Published={self.processed_count} color={self.color_count} depth={self.depth_count} fps={self.fps:.1f}"
             )
             return
         missing = []
@@ -143,15 +156,4 @@ class ImageDetectionNode(Node):
             (0, 255, 0),
             2,
         )
-        if not self.window_created:
-            cv2.namedWindow(self.window, cv2.WINDOW_AUTOSIZE)
-            self.window_created = True
-        cv2.imshow(self.window, annotated)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            rclpy.shutdown()
-
-    def destroy_node(self) -> bool:
-        if self.window_created:
-            cv2.destroyAllWindows()
-        return super().destroy_node()
-
+        self.publisher.publish(bgr_to_image(annotated, msg))

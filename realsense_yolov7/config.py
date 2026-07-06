@@ -22,6 +22,7 @@ class DemoConfig:
     iou_thres: float
     color_topic: str
     depth_topic: str
+    processed_topic: str
     expected_width: int
     expected_height: int
     no_trace: bool
@@ -38,6 +39,7 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--iou-thres", type=float, default=0.65)
     parser.add_argument("--color-topic", default="/camera/camera/color/image_raw")
     parser.add_argument("--depth-topic", default="/camera/camera/aligned_depth_to_color/image_raw")
+    parser.add_argument("--processed-topic", default="/camera/yolo/processed")
     parser.add_argument("--expected-width", type=int, default=896)
     parser.add_argument("--expected-height", type=int, default=504)
     parser.add_argument("--no-trace", action="store_true")
