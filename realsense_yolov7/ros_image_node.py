@@ -55,6 +55,7 @@ class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
         self.config = config
+        self.get_logger().info("Loading YOLOv7 model")
         self.detector = YoloV7Detector(
             config.yolov7_dir,
             config.weights,
@@ -67,20 +68,47 @@ class ImageDetectionNode(Node):
         self.depth_frame = None
         self.fps = 0.0
         self.frames_count = 0
+        self.color_count = 0
+        self.depth_count = 0
+        self.processed_count = 0
+        self.window_created = False
         self.last_fps_time = time.perf_counter()
         self.window = "RealSense YOLOv7"
-        cv2.namedWindow(self.window, cv2.WINDOW_AUTOSIZE)
 
         self.create_subscription(Image, config.depth_topic, self._on_depth, qos_profile_sensor_data)
         self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data)
+        self.create_timer(2.0, self._log_status)
+        self.get_logger().info(f"Subscribed color={config.color_topic} depth={config.depth_topic}")
+
+    def _log_status(self) -> None:
+        if self.processed_count:
+            self.get_logger().info(
+                f"Processed={self.processed_count} color={self.color_count} depth={self.depth_count} fps={self.fps:.1f}"
+            )
+            return
+        missing = []
+        if not self.color_count:
+            missing.append("color")
+        if not self.depth_count:
+            missing.append("depth")
+        if missing:
+            self.get_logger().info(f"Waiting for {', '.join(missing)} image messages")
+        else:
+            self.get_logger().info("Images received, waiting for first processed frame")
 
     def _on_depth(self, msg: Image) -> None:
         try:
             self.depth_frame = image_to_array(msg)
+            self.depth_count += 1
+            if self.depth_count == 1:
+                self.get_logger().info(f"First depth image: {msg.width}x{msg.height} {msg.encoding}")
         except ValueError as exc:
             self.get_logger().warning(str(exc))
 
     def _on_color(self, msg: Image) -> None:
+        self.color_count += 1
+        if self.color_count == 1:
+            self.get_logger().info(f"First color image: {msg.width}x{msg.height} {msg.encoding}")
         if msg.width != self.config.expected_width or msg.height != self.config.expected_height:
             self.get_logger().warning(
                 f"Skipping image with size {msg.width}x{msg.height}; "
@@ -88,7 +116,6 @@ class ImageDetectionNode(Node):
             )
             return
         if self.depth_frame is None:
-            self.get_logger().warning("Skipping color image until first depth image arrives")
             return
 
         try:
@@ -98,6 +125,7 @@ class ImageDetectionNode(Node):
             return
 
         annotated, count = self.detector.annotate(color_frame, self.depth_frame)
+        self.processed_count += 1
         self.frames_count += 1
         now = time.perf_counter()
         elapsed = now - self.last_fps_time
@@ -115,10 +143,15 @@ class ImageDetectionNode(Node):
             (0, 255, 0),
             2,
         )
+        if not self.window_created:
+            cv2.namedWindow(self.window, cv2.WINDOW_AUTOSIZE)
+            self.window_created = True
         cv2.imshow(self.window, annotated)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             rclpy.shutdown()
 
     def destroy_node(self) -> bool:
-        cv2.destroyAllWindows()
+        if self.window_created:
+            cv2.destroyAllWindows()
         return super().destroy_node()
+
