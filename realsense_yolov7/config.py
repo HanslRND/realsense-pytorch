@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_YOLOV7_DIR = Path.home() / "Documents" / "GitHub" / "yolov7"
+def default_yolov7_dir() -> Path:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return Path(get_package_share_directory("realsense_yolov7"))
+    except Exception:
+        return Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -22,9 +28,10 @@ class DemoConfig:
 
 
 def parse_args() -> DemoConfig:
+    yolov7_dir = default_yolov7_dir()
     parser = ArgumentParser(description="Run YOLOv7 detection on ROS2 RealSense image topics.")
-    parser.add_argument("--yolov7-dir", type=Path, default=DEFAULT_YOLOV7_DIR)
-    parser.add_argument("--weights", type=Path, default=DEFAULT_YOLOV7_DIR / "yolov7.pt")
+    parser.add_argument("--yolov7-dir", type=Path, default=yolov7_dir)
+    parser.add_argument("--weights", type=Path, default=yolov7_dir / "models" / "weight" / "yolov7.pt")
     parser.add_argument("--device", default="", help="cuda device id like 0, or cpu")
     parser.add_argument("--img-size", type=int, default=640)
     parser.add_argument("--conf-thres", type=float, default=0.75)
