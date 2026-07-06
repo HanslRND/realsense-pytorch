@@ -67,6 +67,7 @@ class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
         self.config = config
+        self.get_logger().info(f"Running code from {__file__}")
         self.get_logger().info("Loading YOLOv7 model")
         self.detector = YoloV7Detector(
             config.yolov7_dir,
@@ -86,14 +87,33 @@ class ImageDetectionNode(Node):
         self.last_fps_time = time.perf_counter()
 
         self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
-        self.create_subscription(Image, config.depth_topic, self._on_depth, qos_profile_sensor_data)
-        self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data)
-        self.create_timer(2.0, self._log_status)
+        self.depth_subscription = self.create_subscription(
+            Image, config.depth_topic, self._on_depth, qos_profile_sensor_data
+        )
+        self.color_subscription = self.create_subscription(
+            Image, config.color_topic, self._on_color, qos_profile_sensor_data
+        )
+        self.status_timer = self.create_timer(2.0, self._log_status)
         self.get_logger().info(
             f"Subscribed color={config.color_topic} depth={config.depth_topic}; publishing {config.processed_topic}"
         )
+        self._log_graph()
+
+    def _log_graph(self) -> None:
+        for label, topic in (("color", self.config.color_topic), ("depth", self.config.depth_topic)):
+            infos = self.get_publishers_info_by_topic(topic)
+            if not infos:
+                self.get_logger().warning(f"No publishers discovered for {label} topic {topic}")
+                continue
+            summary = ", ".join(
+                f"{info.topic_type} reliability={info.qos_profile.reliability} durability={info.qos_profile.durability}"
+                for info in infos
+            )
+            self.get_logger().info(f"Discovered {len(infos)} publisher(s) for {label} topic {topic}: {summary}")
 
     def _log_status(self) -> None:
+        if not self.color_count or not self.depth_count:
+            self._log_graph()
         if self.processed_count:
             self.get_logger().info(
                 f"Published={self.processed_count} color={self.color_count} depth={self.depth_count} fps={self.fps:.1f}"
@@ -157,3 +177,6 @@ class ImageDetectionNode(Node):
             2,
         )
         self.publisher.publish(bgr_to_image(annotated, msg))
+
+
+
