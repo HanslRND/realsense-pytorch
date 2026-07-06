@@ -96,6 +96,8 @@ class ImageDetectionNode(Node):
         self.color_count = 0
         self.depth_count = 0
         self.processed_count = 0
+        self.raw_color_count = 0
+        self.raw_depth_count = 0
         self.last_fps_time = time.perf_counter()
 
         self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
@@ -106,6 +108,14 @@ class ImageDetectionNode(Node):
         self.color_subscriptions = [
             self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data),
             self.create_subscription(Image, config.color_topic, self._on_color, _RELIABLE_IMAGE_QOS),
+        ]
+        self.raw_depth_subscriptions = [
+            self.create_subscription(Image, config.depth_topic, self._on_raw_depth, qos_profile_sensor_data, raw=True),
+            self.create_subscription(Image, config.depth_topic, self._on_raw_depth, _RELIABLE_IMAGE_QOS, raw=True),
+        ]
+        self.raw_color_subscriptions = [
+            self.create_subscription(Image, config.color_topic, self._on_raw_color, qos_profile_sensor_data, raw=True),
+            self.create_subscription(Image, config.color_topic, self._on_raw_color, _RELIABLE_IMAGE_QOS, raw=True),
         ]
         self.status_timer = self.create_timer(2.0, self._log_status)
         self.get_logger().info(
@@ -130,7 +140,8 @@ class ImageDetectionNode(Node):
             self._log_graph()
         if self.processed_count:
             self.get_logger().info(
-                f"Published={self.processed_count} color={self.color_count} depth={self.depth_count} fps={self.fps:.1f}"
+                f"Published={self.processed_count} color={self.color_count} depth={self.depth_count} "
+                f"raw_color={self.raw_color_count} raw_depth={self.raw_depth_count} fps={self.fps:.1f}"
             )
             return
         missing = []
@@ -139,9 +150,26 @@ class ImageDetectionNode(Node):
         if not self.depth_count:
             missing.append("depth")
         if missing:
-            self.get_logger().info(f"Waiting for {', '.join(missing)} image messages")
+            self.get_logger().info(
+                f"Waiting for {', '.join(missing)} image messages "
+                f"raw_color={self.raw_color_count} raw_depth={self.raw_depth_count}"
+            )
         else:
             self.get_logger().info("Images received, waiting for first processed frame")
+
+    def _on_raw_depth(self, data: bytes) -> None:
+        self.raw_depth_count += 1
+        if self.raw_depth_count == 1:
+            self.get_logger().warning(
+                f"Raw depth bytes received ({len(data)} bytes), typed depth count={self.depth_count}"
+            )
+
+    def _on_raw_color(self, data: bytes) -> None:
+        self.raw_color_count += 1
+        if self.raw_color_count == 1:
+            self.get_logger().warning(
+                f"Raw color bytes received ({len(data)} bytes), typed color count={self.color_count}"
+            )
 
     def _on_depth(self, msg: Image) -> None:
         key = image_key(msg)
