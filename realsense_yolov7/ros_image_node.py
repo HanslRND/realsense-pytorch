@@ -1,8 +1,9 @@
+import sys
 import time
 
 import cv2
+import numpy as np
 import rclpy
-from cv_bridge import CvBridge, CvBridgeError
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -11,11 +12,49 @@ from realsense_yolov7.config import DemoConfig
 from realsense_yolov7.yolov7_detector import YoloV7Detector
 
 
+_ENCODINGS = {
+    "bgr8": (np.uint8, 3),
+    "rgb8": (np.uint8, 3),
+    "mono8": (np.uint8, 1),
+    "8UC1": (np.uint8, 1),
+    "16UC1": (np.uint16, 1),
+    "mono16": (np.uint16, 1),
+    "32FC1": (np.float32, 1),
+}
+
+
+def image_to_array(msg: Image) -> np.ndarray:
+    if msg.encoding not in _ENCODINGS:
+        raise ValueError(f"Unsupported image encoding: {msg.encoding}")
+
+    dtype, channels = _ENCODINGS[msg.encoding]
+    dtype = np.dtype(dtype).newbyteorder(">" if msg.is_bigendian else "<")
+    row_items = msg.step // dtype.itemsize
+    data = np.frombuffer(memoryview(msg.data), dtype=dtype)
+    if channels == 1:
+        image = data.reshape(msg.height, row_items)[:, : msg.width]
+    else:
+        row_pixels = row_items // channels
+        image = data.reshape(msg.height, row_pixels, channels)[:, : msg.width, :]
+
+    if msg.is_bigendian == (sys.byteorder == "little"):
+        image = image.byteswap().view(image.dtype.newbyteorder())
+    return np.ascontiguousarray(image)
+
+
+def image_to_bgr(msg: Image) -> np.ndarray:
+    image = image_to_array(msg)
+    if msg.encoding == "rgb8":
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if msg.encoding != "bgr8":
+        raise ValueError(f"Unsupported color encoding: {msg.encoding}")
+    return image
+
+
 class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
         self.config = config
-        self.bridge = CvBridge()
         self.detector = YoloV7Detector(
             config.yolov7_dir,
             config.weights,
@@ -37,9 +76,9 @@ class ImageDetectionNode(Node):
 
     def _on_depth(self, msg: Image) -> None:
         try:
-            self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        except CvBridgeError as exc:
-            self.get_logger().warning(f"Failed to convert depth image: {exc}")
+            self.depth_frame = image_to_array(msg)
+        except ValueError as exc:
+            self.get_logger().warning(str(exc))
 
     def _on_color(self, msg: Image) -> None:
         if msg.width != self.config.expected_width or msg.height != self.config.expected_height:
@@ -53,9 +92,9 @@ class ImageDetectionNode(Node):
             return
 
         try:
-            color_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        except CvBridgeError as exc:
-            self.get_logger().warning(f"Failed to convert color image: {exc}")
+            color_frame = image_to_bgr(msg)
+        except ValueError as exc:
+            self.get_logger().warning(str(exc))
             return
 
         annotated, count = self.detector.annotate(color_frame, self.depth_frame)
@@ -83,4 +122,3 @@ class ImageDetectionNode(Node):
     def destroy_node(self) -> bool:
         cv2.destroyAllWindows()
         return super().destroy_node()
-
