@@ -4,7 +4,7 @@ import time
 import cv2
 import numpy as np
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 from realsense_yolov7.config import DemoConfig
@@ -20,6 +20,16 @@ _ENCODINGS = {
     "mono16": (np.uint16, 1),
     "32FC1": (np.float32, 1),
 }
+
+_RELIABLE_IMAGE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+
+
+def image_key(msg: Image) -> tuple[int, int, str]:
+    return msg.header.stamp.sec, msg.header.stamp.nanosec, msg.header.frame_id
 
 
 def image_to_array(msg: Image) -> np.ndarray:
@@ -79,6 +89,8 @@ class ImageDetectionNode(Node):
             trace=not config.no_trace,
         )
         self.depth_frame = None
+        self.last_color_key = None
+        self.last_depth_key = None
         self.fps = 0.0
         self.frames_count = 0
         self.color_count = 0
@@ -87,12 +99,14 @@ class ImageDetectionNode(Node):
         self.last_fps_time = time.perf_counter()
 
         self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
-        self.depth_subscription = self.create_subscription(
-            Image, config.depth_topic, self._on_depth, qos_profile_sensor_data
-        )
-        self.color_subscription = self.create_subscription(
-            Image, config.color_topic, self._on_color, qos_profile_sensor_data
-        )
+        self.depth_subscriptions = [
+            self.create_subscription(Image, config.depth_topic, self._on_depth, qos_profile_sensor_data),
+            self.create_subscription(Image, config.depth_topic, self._on_depth, _RELIABLE_IMAGE_QOS),
+        ]
+        self.color_subscriptions = [
+            self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data),
+            self.create_subscription(Image, config.color_topic, self._on_color, _RELIABLE_IMAGE_QOS),
+        ]
         self.status_timer = self.create_timer(2.0, self._log_status)
         self.get_logger().info(
             f"Subscribed color={config.color_topic} depth={config.depth_topic}; publishing {config.processed_topic}"
@@ -130,6 +144,10 @@ class ImageDetectionNode(Node):
             self.get_logger().info("Images received, waiting for first processed frame")
 
     def _on_depth(self, msg: Image) -> None:
+        key = image_key(msg)
+        if key == self.last_depth_key:
+            return
+        self.last_depth_key = key
         try:
             self.depth_frame = image_to_array(msg)
             self.depth_count += 1
@@ -139,6 +157,10 @@ class ImageDetectionNode(Node):
             self.get_logger().warning(str(exc))
 
     def _on_color(self, msg: Image) -> None:
+        key = image_key(msg)
+        if key == self.last_color_key:
+            return
+        self.last_color_key = key
         self.color_count += 1
         if self.color_count == 1:
             self.get_logger().info(f"First color image: {msg.width}x{msg.height} {msg.encoding}")
@@ -177,6 +199,3 @@ class ImageDetectionNode(Node):
             2,
         )
         self.publisher.publish(bgr_to_image(annotated, msg))
-
-
-
