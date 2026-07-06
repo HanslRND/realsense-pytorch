@@ -3,13 +3,10 @@ from copy import copy
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-import requests
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import DeformConv2d
-from PIL import Image
 from torch.cuda import amp
 
 from utils.datasets import letterbox
@@ -2017,3 +2014,4 @@ class ST2CSPC(nn.Module):
         return self.cv4(torch.cat((y1, y2), dim=1))
 
 ##### end of swin transformer v2 #####   
+

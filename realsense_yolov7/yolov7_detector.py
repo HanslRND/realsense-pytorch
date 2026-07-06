@@ -1,13 +1,13 @@
-import sys
-import torch
 from pathlib import Path
-from utils.datasets import letterbox
-from utils.general import non_max_suppression, scale_coords, check_img_size
-from utils.plots import plot_one_box
-from models.experimental import attempt_load
-from utils.torch_utils import TracedModel, select_device
 
 import numpy as np
+import torch
+
+from models.experimental import attempt_load
+from utils.datasets import letterbox
+from utils.general import check_img_size, non_max_suppression, scale_coords
+from utils.plots import plot_one_box
+from utils.torch_utils import TracedModel, select_device
 
 
 class YoloV7Detector:
@@ -25,9 +25,6 @@ class YoloV7Detector:
             raise FileNotFoundError(f"YOLOv7 directory not found: {yolov7_dir}")
         if not weights.exists():
             raise FileNotFoundError(f"YOLOv7 weights not found: {weights}")
-
-        sys.path.insert(0, str(yolov7_dir))
-
 
         original_torch_load = torch.load
 
@@ -78,8 +75,14 @@ class YoloV7Detector:
             pred[:, :4] = scale_coords(img_tensor.shape[2:], pred[:, :4], annotated.shape).round()
             for *xyxy, conf, cls in reversed(pred):
                 count += 1
-                depth_value = np.median(depth_frame[int(xyxy[1]) : int(xyxy[3]), int(xyxy[0]) : int(xyxy[2])])
-                label = f"{self.names[int(cls)]} {conf:.2f} Depth: {depth_value/1000:.2f}m"
+                x1, y1, x2, y2 = [int(v) for v in xyxy]
+                x1 = max(0, min(x1, depth_frame.shape[1]))
+                x2 = max(0, min(x2, depth_frame.shape[1]))
+                y1 = max(0, min(y1, depth_frame.shape[0]))
+                y2 = max(0, min(y2, depth_frame.shape[0]))
+                depth_roi = depth_frame[y1:y2, x1:x2]
+                depth_value = np.median(depth_roi) if depth_roi.size else 0
+                label = f"{self.names[int(cls)]} {conf:.2f} Depth: {depth_value / 1000:.2f}m"
 
                 if label.startswith("person"):
                     plot_one_box(
@@ -91,4 +94,3 @@ class YoloV7Detector:
                     )
 
         return annotated, count
-
