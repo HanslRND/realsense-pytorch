@@ -3,6 +3,7 @@ import time
 
 import cv2
 import numpy as np
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -78,16 +79,8 @@ class ImageDetectionNode(Node):
         super().__init__("realsense_yolov7")
         self.config = config
         self.get_logger().info(f"Running code from {__file__}")
-        self.get_logger().info("Loading YOLOv7 model")
-        self.detector = YoloV7Detector(
-            config.yolov7_dir,
-            config.weights,
-            config.device,
-            config.img_size,
-            config.conf_thres,
-            config.iou_thres,
-            trace=not config.no_trace,
-        )
+        self.get_logger().info(f"RMW implementation: {rclpy.get_rmw_implementation_identifier()}")
+        self.detector: YoloV7Detector | None = None
         self.depth_frame = None
         self.last_color_key = None
         self.last_depth_key = None
@@ -123,6 +116,20 @@ class ImageDetectionNode(Node):
         )
         self._log_graph()
 
+    def _get_detector(self) -> YoloV7Detector:
+        if self.detector is None:
+            self.get_logger().info("Loading YOLOv7 model")
+            self.detector = YoloV7Detector(
+                self.config.yolov7_dir,
+                self.config.weights,
+                self.config.device,
+                self.config.img_size,
+                self.config.conf_thres,
+                self.config.iou_thres,
+                trace=not self.config.no_trace,
+            )
+        return self.detector
+
     def _log_graph(self) -> None:
         for label, topic in (("color", self.config.color_topic), ("depth", self.config.depth_topic)):
             infos = self.get_publishers_info_by_topic(topic)
@@ -134,6 +141,12 @@ class ImageDetectionNode(Node):
                 for info in infos
             )
             self.get_logger().info(f"Discovered {len(infos)} publisher(s) for {label} topic {topic}: {summary}")
+            bad_types = sorted({info.topic_type for info in infos if info.topic_type != "sensor_msgs/msg/Image"})
+            if bad_types:
+                self.get_logger().warning(
+                    f"{label} topic publisher type is not sensor_msgs/msg/Image: {bad_types}. "
+                    "This node cannot receive image data until the discovered topic type matches."
+                )
 
     def _log_status(self) -> None:
         if not self.color_count or not self.depth_count:
@@ -207,7 +220,7 @@ class ImageDetectionNode(Node):
             self.get_logger().warning(str(exc))
             return
 
-        annotated, count = self.detector.annotate(color_frame, self.depth_frame)
+        annotated, count = self._get_detector().annotate(color_frame, self.depth_frame)
         self.processed_count += 1
         self.frames_count += 1
         now = time.perf_counter()
