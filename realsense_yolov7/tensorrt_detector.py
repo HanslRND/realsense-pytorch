@@ -139,7 +139,7 @@ class TensorRTYoloV7Detector:
         total_start = time.perf_counter()
 
         start = time.perf_counter()
-        img = letterbox(frame, self.img_size, stride=self.stride)[0]
+        img = letterbox(frame, self.img_size, auto=False, stride=self.stride)[0]
         img = img[:, :, ::-1].transpose(2, 0, 1)
         img = np.ascontiguousarray(img)
         timings["preprocess_ms"] = (time.perf_counter() - start) * 1000
@@ -184,3 +184,4 @@ class TensorRTYoloV7Detector:
         timings["draw_ms"] = (time.perf_counter() - start) * 1000
         timings["detector_total_ms"] = (time.perf_counter() - total_start) * 1000
         return annotated, count, timings
+
