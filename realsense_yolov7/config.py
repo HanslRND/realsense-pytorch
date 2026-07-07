@@ -16,6 +16,7 @@ def default_yolov7_dir() -> Path:
 class DemoConfig:
     yolov7_dir: Path
     weights: Path
+    engine: Path | None
     device: str
     img_size: int
     conf_thres: float
@@ -34,6 +35,7 @@ def parse_args() -> DemoConfig:
     parser = ArgumentParser(description="Run YOLOv7 detection on ROS2 RealSense image topics.")
     parser.add_argument("--yolov7-dir", type=Path, default=yolov7_dir)
     parser.add_argument("--weights", type=Path, default=yolov7_dir / "models" / "weight" / "yolov7.pt")
+    parser.add_argument("--engine", type=Path, default=None, help="TensorRT engine path. Uses PyTorch when omitted.")
     parser.add_argument("--device", default="", help="cuda device id like 0, or cpu")
     parser.add_argument("--img-size", type=int, default=640)
     parser.add_argument("--conf-thres", type=float, default=0.75)

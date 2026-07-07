@@ -14,6 +14,12 @@ install(PROGRAMS
   RENAME realsense_yolov7_node
 )
 
+install(PROGRAMS
+  export_tensorrt.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME export_tensorrt
+)
+
 install(DIRECTORY
   models/weight
   DESTINATION share/${PROJECT_NAME}/models

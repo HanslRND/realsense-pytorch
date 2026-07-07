@@ -9,6 +9,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 from realsense_yolov7.config import DemoConfig
+from realsense_yolov7.tensorrt_detector import TensorRTYoloV7Detector
 from realsense_yolov7.yolov7_detector import YoloV7Detector
 
 
@@ -72,7 +73,7 @@ class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
         self.config = config
-        self.detector: YoloV7Detector | None = None
+        self.detector: YoloV7Detector | TensorRTYoloV7Detector | None = None
         self.depth_frame = None
         self.latest_color_msg: Image | None = None
         self.frame_lock = Lock()
@@ -103,18 +104,28 @@ class ImageDetectionNode(Node):
             self.worker.join(timeout=2.0)
         return super().destroy_node()
 
-    def _get_detector(self) -> YoloV7Detector:
+    def _get_detector(self):
         if self.detector is None:
-            self.get_logger().info("Loading YOLOv7 model")
-            self.detector = YoloV7Detector(
-                self.config.yolov7_dir,
-                self.config.weights,
-                self.config.device,
-                self.config.img_size,
-                self.config.conf_thres,
-                self.config.iou_thres,
-                trace=not self.config.no_trace,
-            )
+            if self.config.engine:
+                self.get_logger().info(f"Loading TensorRT engine {self.config.engine}")
+                self.detector = TensorRTYoloV7Detector(
+                    self.config.engine,
+                    self.config.weights,
+                    self.config.img_size,
+                    self.config.conf_thres,
+                    self.config.iou_thres,
+                )
+            else:
+                self.get_logger().info("Loading YOLOv7 model")
+                self.detector = YoloV7Detector(
+                    self.config.yolov7_dir,
+                    self.config.weights,
+                    self.config.device,
+                    self.config.img_size,
+                    self.config.conf_thres,
+                    self.config.iou_thres,
+                    trace=not self.config.no_trace,
+                )
         return self.detector
 
     def _on_depth(self, msg: Image) -> None:
@@ -208,7 +219,4 @@ class ImageDetectionNode(Node):
                     f"infer={timings['inference_ms']:.1f}ms nms={timings['nms_ms']:.1f}ms "
                     f"draw={timings['draw_ms']:.1f}ms publish={publish_ms:.1f}ms"
                 )
-
-
-
 
