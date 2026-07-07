@@ -1,11 +1,11 @@
 import sys
 import time
+from threading import Event, Lock, Thread
 
 import cv2
 import numpy as np
-import rclpy
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 from realsense_yolov7.config import DemoConfig
@@ -21,12 +21,6 @@ _ENCODINGS = {
     "mono16": (np.uint16, 1),
     "32FC1": (np.float32, 1),
 }
-
-_RELIABLE_IMAGE_QOS = QoSProfile(
-    history=HistoryPolicy.KEEP_LAST,
-    depth=10,
-    reliability=ReliabilityPolicy.RELIABLE,
-)
 
 
 def image_key(msg: Image) -> tuple[int, int, str]:
@@ -78,43 +72,35 @@ class ImageDetectionNode(Node):
     def __init__(self, config: DemoConfig) -> None:
         super().__init__("realsense_yolov7")
         self.config = config
-        self.get_logger().info(f"Running code from {__file__}")
-        self.get_logger().info(f"RMW implementation: {rclpy.get_rmw_implementation_identifier()}")
         self.detector: YoloV7Detector | None = None
         self.depth_frame = None
+        self.latest_color_msg: Image | None = None
+        self.frame_lock = Lock()
+        self.stop_event = Event()
+        self.new_frame_event = Event()
         self.last_color_key = None
         self.last_depth_key = None
+        self.last_processed_key = None
+        self.last_bad_size = None
         self.fps = 0.0
         self.frames_count = 0
-        self.color_count = 0
-        self.depth_count = 0
-        self.processed_count = 0
-        self.raw_color_count = 0
-        self.raw_depth_count = 0
         self.last_fps_time = time.perf_counter()
 
         self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
-        self.depth_subscriptions = [
-            self.create_subscription(Image, config.depth_topic, self._on_depth, qos_profile_sensor_data),
-            self.create_subscription(Image, config.depth_topic, self._on_depth, _RELIABLE_IMAGE_QOS),
-        ]
-        self.color_subscriptions = [
-            self.create_subscription(Image, config.color_topic, self._on_color, qos_profile_sensor_data),
-            self.create_subscription(Image, config.color_topic, self._on_color, _RELIABLE_IMAGE_QOS),
-        ]
-        self.raw_depth_subscriptions = [
-            self.create_subscription(Image, config.depth_topic, self._on_raw_depth, qos_profile_sensor_data, raw=True),
-            self.create_subscription(Image, config.depth_topic, self._on_raw_depth, _RELIABLE_IMAGE_QOS, raw=True),
-        ]
-        self.raw_color_subscriptions = [
-            self.create_subscription(Image, config.color_topic, self._on_raw_color, qos_profile_sensor_data, raw=True),
-            self.create_subscription(Image, config.color_topic, self._on_raw_color, _RELIABLE_IMAGE_QOS, raw=True),
-        ]
-        self.status_timer = self.create_timer(2.0, self._log_status)
+        self.depth_subscription = self.create_subscription(Image, config.depth_topic, self._on_depth, 10)
+        self.color_subscription = self.create_subscription(Image, config.color_topic, self._on_color, 10)
+        self.worker = Thread(target=self._process_latest_frames, daemon=True)
+        self.worker.start()
         self.get_logger().info(
             f"Subscribed color={config.color_topic} depth={config.depth_topic}; publishing {config.processed_topic}"
         )
-        self._log_graph()
+
+    def destroy_node(self) -> bool:
+        self.stop_event.set()
+        self.new_frame_event.set()
+        if self.worker.is_alive():
+            self.worker.join(timeout=2.0)
+        return super().destroy_node()
 
     def _get_detector(self) -> YoloV7Detector:
         if self.detector is None:
@@ -130,113 +116,76 @@ class ImageDetectionNode(Node):
             )
         return self.detector
 
-    def _log_graph(self) -> None:
-        for label, topic in (("color", self.config.color_topic), ("depth", self.config.depth_topic)):
-            infos = self.get_publishers_info_by_topic(topic)
-            if not infos:
-                self.get_logger().warning(f"No publishers discovered for {label} topic {topic}")
-                continue
-            summary = ", ".join(
-                f"{info.topic_type} reliability={info.qos_profile.reliability} durability={info.qos_profile.durability}"
-                for info in infos
-            )
-            self.get_logger().info(f"Discovered {len(infos)} publisher(s) for {label} topic {topic}: {summary}")
-            bad_types = sorted({info.topic_type for info in infos if info.topic_type != "sensor_msgs/msg/Image"})
-            if bad_types:
-                self.get_logger().warning(
-                    f"{label} topic publisher type is not sensor_msgs/msg/Image: {bad_types}. "
-                    "This node cannot receive image data until the discovered topic type matches."
-                )
-
-    def _log_status(self) -> None:
-        if not self.color_count or not self.depth_count:
-            self._log_graph()
-        if self.processed_count:
-            self.get_logger().info(
-                f"Published={self.processed_count} color={self.color_count} depth={self.depth_count} "
-                f"raw_color={self.raw_color_count} raw_depth={self.raw_depth_count} fps={self.fps:.1f}"
-            )
-            return
-        missing = []
-        if not self.color_count:
-            missing.append("color")
-        if not self.depth_count:
-            missing.append("depth")
-        if missing:
-            self.get_logger().info(
-                f"Waiting for {', '.join(missing)} image messages "
-                f"raw_color={self.raw_color_count} raw_depth={self.raw_depth_count}"
-            )
-        else:
-            self.get_logger().info("Images received, waiting for first processed frame")
-
-    def _on_raw_depth(self, data: bytes) -> None:
-        self.raw_depth_count += 1
-        if self.raw_depth_count == 1:
-            self.get_logger().warning(
-                f"Raw depth bytes received ({len(data)} bytes), typed depth count={self.depth_count}"
-            )
-
-    def _on_raw_color(self, data: bytes) -> None:
-        self.raw_color_count += 1
-        if self.raw_color_count == 1:
-            self.get_logger().warning(
-                f"Raw color bytes received ({len(data)} bytes), typed color count={self.color_count}"
-            )
-
     def _on_depth(self, msg: Image) -> None:
         key = image_key(msg)
         if key == self.last_depth_key:
             return
         self.last_depth_key = key
         try:
-            self.depth_frame = image_to_array(msg)
-            self.depth_count += 1
-            if self.depth_count == 1:
-                self.get_logger().info(f"First depth image: {msg.width}x{msg.height} {msg.encoding}")
+            depth_frame = image_to_array(msg)
         except ValueError as exc:
             self.get_logger().warning(str(exc))
+            return
+
+        with self.frame_lock:
+            self.depth_frame = depth_frame
 
     def _on_color(self, msg: Image) -> None:
         key = image_key(msg)
         if key == self.last_color_key:
             return
         self.last_color_key = key
-        self.color_count += 1
-        if self.color_count == 1:
-            self.get_logger().info(f"First color image: {msg.width}x{msg.height} {msg.encoding}")
-        if msg.width != self.config.expected_width or msg.height != self.config.expected_height:
-            self.get_logger().warning(
-                f"Skipping image with size {msg.width}x{msg.height}; "
-                f"expected {self.config.expected_width}x{self.config.expected_height}"
+        with self.frame_lock:
+            self.latest_color_msg = msg
+        self.new_frame_event.set()
+
+    def _process_latest_frames(self) -> None:
+        while not self.stop_event.is_set():
+            self.new_frame_event.wait(timeout=0.2)
+            self.new_frame_event.clear()
+            with self.frame_lock:
+                color_msg = self.latest_color_msg
+                depth_frame = self.depth_frame
+
+            if color_msg is None or depth_frame is None:
+                continue
+            key = image_key(color_msg)
+            if key == self.last_processed_key:
+                continue
+            self.last_processed_key = key
+
+            if color_msg.width != self.config.expected_width or color_msg.height != self.config.expected_height:
+                size = (color_msg.width, color_msg.height)
+                if size != self.last_bad_size:
+                    self.last_bad_size = size
+                    self.get_logger().warning(
+                        f"Skipping image with size {color_msg.width}x{color_msg.height}; "
+                        f"expected {self.config.expected_width}x{self.config.expected_height}"
+                    )
+                continue
+
+            try:
+                color_frame = image_to_bgr(color_msg)
+                annotated, count = self._get_detector().annotate(color_frame, depth_frame)
+            except ValueError as exc:
+                self.get_logger().warning(str(exc))
+                continue
+
+            self.frames_count += 1
+            now = time.perf_counter()
+            elapsed = now - self.last_fps_time
+            if elapsed >= 1.0:
+                self.fps = self.frames_count / elapsed
+                self.frames_count = 0
+                self.last_fps_time = now
+
+            cv2.putText(
+                annotated,
+                f"FPS: {self.fps:.1f}  detections: {count}",
+                (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
             )
-            return
-        if self.depth_frame is None:
-            return
-
-        try:
-            color_frame = image_to_bgr(msg)
-        except ValueError as exc:
-            self.get_logger().warning(str(exc))
-            return
-
-        annotated, count = self._get_detector().annotate(color_frame, self.depth_frame)
-        self.processed_count += 1
-        self.frames_count += 1
-        now = time.perf_counter()
-        elapsed = now - self.last_fps_time
-        if elapsed >= 1.0:
-            self.fps = self.frames_count / elapsed
-            self.frames_count = 0
-            self.last_fps_time = now
-
-        cv2.putText(
-            annotated,
-            f"FPS: {self.fps:.1f}  detections: {count}",
-            (12, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2,
-        )
-        self.publisher.publish(bgr_to_image(annotated, msg))
+            self.publisher.publish(bgr_to_image(annotated, color_msg))
