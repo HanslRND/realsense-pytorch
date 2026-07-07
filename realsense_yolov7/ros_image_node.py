@@ -84,6 +84,7 @@ class ImageDetectionNode(Node):
         self.last_bad_size = None
         self.fps = 0.0
         self.frames_count = 0
+        self.processed_frames = 0
         self.last_fps_time = time.perf_counter()
 
         self.publisher = self.create_publisher(Image, config.processed_topic, qos_profile_sensor_data)
@@ -165,12 +166,18 @@ class ImageDetectionNode(Node):
                 continue
 
             try:
+                detector = self._get_detector()
+                frame_start = time.perf_counter()
+                start = time.perf_counter()
                 color_frame = image_to_bgr(color_msg)
-                annotated, count = self._get_detector().annotate(color_frame, depth_frame)
+                convert_ms = (time.perf_counter() - start) * 1000
+                profile = self.config.profile_every > 0 and self.processed_frames % self.config.profile_every == 0
+                annotated, count, timings = detector.annotate(color_frame, depth_frame, profile=profile)
             except ValueError as exc:
                 self.get_logger().warning(str(exc))
                 continue
 
+            self.processed_frames += 1
             self.frames_count += 1
             now = time.perf_counter()
             elapsed = now - self.last_fps_time
@@ -179,6 +186,7 @@ class ImageDetectionNode(Node):
                 self.frames_count = 0
                 self.last_fps_time = now
 
+            start = time.perf_counter()
             cv2.putText(
                 annotated,
                 f"FPS: {self.fps:.1f}  detections: {count}",
@@ -189,3 +197,18 @@ class ImageDetectionNode(Node):
                 2,
             )
             self.publisher.publish(bgr_to_image(annotated, color_msg))
+            publish_ms = (time.perf_counter() - start) * 1000
+            total_ms = (time.perf_counter() - frame_start) * 1000
+
+            if profile:
+                self.get_logger().info(
+                    "profile "
+                    f"total={total_ms:.1f}ms convert={convert_ms:.1f}ms "
+                    f"pre={timings['preprocess_ms']:.1f}ms tensor={timings['tensor_ms']:.1f}ms "
+                    f"infer={timings['inference_ms']:.1f}ms nms={timings['nms_ms']:.1f}ms "
+                    f"draw={timings['draw_ms']:.1f}ms publish={publish_ms:.1f}ms"
+                )
+
+
+
+

@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import numpy as np
 import torch
@@ -55,20 +56,41 @@ class YoloV7Detector:
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
 
-    def annotate(self, frame: np.ndarray, depth_frame: np.ndarray) -> tuple[np.ndarray, int]:
+    def _sync_if_profiled(self, profile: bool) -> None:
+        if profile and self.device.type != "cpu":
+            self.torch.cuda.synchronize()
+
+    def annotate(self, frame: np.ndarray, depth_frame: np.ndarray, profile: bool = False) -> tuple[np.ndarray, int, dict[str, float]]:
+        timings: dict[str, float] = {}
+        total_start = time.perf_counter()
+
+        start = time.perf_counter()
         img = letterbox(frame, self.img_size, stride=self.stride)[0]
         img = img[:, :, ::-1].transpose(2, 0, 1)
         img = np.ascontiguousarray(img)
+        timings["preprocess_ms"] = (time.perf_counter() - start) * 1000
+
+        start = time.perf_counter()
         img_tensor = self.torch.from_numpy(img).to(self.device)
         img_tensor = img_tensor.half() if self.half else img_tensor.float()
         img_tensor /= 255.0
         if img_tensor.ndimension() == 3:
             img_tensor = img_tensor.unsqueeze(0)
+        self._sync_if_profiled(profile)
+        timings["tensor_ms"] = (time.perf_counter() - start) * 1000
 
+        start = time.perf_counter()
         with self.torch.no_grad():
             pred = self.model(img_tensor, augment=False)[0]
-        pred = non_max_suppression(pred, self.conf_thres, self.iou_thres)[0]
+        self._sync_if_profiled(profile)
+        timings["inference_ms"] = (time.perf_counter() - start) * 1000
 
+        start = time.perf_counter()
+        pred = non_max_suppression(pred, self.conf_thres, self.iou_thres)[0]
+        self._sync_if_profiled(profile)
+        timings["nms_ms"] = (time.perf_counter() - start) * 1000
+
+        start = time.perf_counter()
         annotated = frame.copy()
         count = 0
         if pred is not None and len(pred):
@@ -92,5 +114,6 @@ class YoloV7Detector:
                         color=self.colors[int(cls)],
                         line_thickness=2,
                     )
-
-        return annotated, count
+        timings["draw_ms"] = (time.perf_counter() - start) * 1000
+        timings["detector_total_ms"] = (time.perf_counter() - total_start) * 1000
+        return annotated, count, timings

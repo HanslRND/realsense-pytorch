@@ -26,6 +26,7 @@ class DemoConfig:
     expected_width: int
     expected_height: int
     no_trace: bool
+    profile_every: int
 
 
 def parse_args() -> DemoConfig:
@@ -43,4 +44,5 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--expected-width", type=int, default=896)
     parser.add_argument("--expected-height", type=int, default=504)
     parser.add_argument("--no-trace", action="store_true")
+    parser.add_argument("--profile-every", type=int, default=0, help="log per-stage timing every N processed frames")
     return DemoConfig(**vars(parser.parse_args()))
